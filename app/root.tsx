@@ -46,6 +46,13 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  // 检查是否为DevTools的特殊请求
+  const url = typeof window !== 'undefined' ? window.location.pathname : '';
+  if (url.startsWith('/.well-known/appspecific/')) {
+    // 对于DevTools的请求，返回空JSON
+    return {};
+  }
+  
   let message = "Oops!";
   let details = "An unexpected error occurred.";
   let stack: string | undefined;
