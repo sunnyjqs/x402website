@@ -9,21 +9,15 @@ class X402Client {
   public address: string | null = null;  
 
   async initialize() {  
-    // Get private key from backend env
-    const { data } = await axios.post("/api/cdp/accounts/import", {});  
-    const privateKey = data.private_key || data.private_key_hex || data.private_key_hex_prefixed;
-    if (!privateKey) {
-      throw new Error("Backend did not return private key");
-    }
+    // 只获取地址，不获取私钥
+    const { data } = await axios.post("/api/cdp/accounts/import", {});
+    this.address = data.address;
     
-    const normalized = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;  
-    const account = privateKeyToAccount(normalized as `0x${string}`);  
-    this.address = account.address;  
-    const api = withPaymentInterceptor(  
-      axios.create({ baseURL: "https://pay.zen7.com/crypto", timeout: 30000 }),  
-      account,  
-    );  
-    this.httpClient = api;  
+    // 使用普通的 axios 实例，调用后端代理
+    this.httpClient = axios.create({ 
+      baseURL: "/api/x402", // 调用后端代理
+      timeout: 30000 
+    });
   }  
 }  
   
@@ -72,23 +66,30 @@ export function Welcome() {
     setLoading(true);  
     setError(null);  
     setPaymentInfo(null);  
-    try {  
-      const response = await client.httpClient.get("/item1");  
-      setWeatherData(response.data);  
-      const xpr = response.headers["x-payment-response"];  
-      if (xpr) {  
-        try {  
-          const pr = decodeXPaymentResponse(xpr);  
-          setPaymentInfo(pr);  
-        } catch {  
-          setPaymentInfo(null);  
-        }  
-      }  
-    } catch (err: any) {  
-      setError(err.message || "获取失败");  
-    } finally {  
-      setLoading(false);  
-    }  
+      try {  
+    // 调用后端代理，后端使用私钥处理 x402 请求
+    const response = await client.httpClient.get("/item1");
+    
+    // 处理响应数据
+    if (response.data.data) {
+      setWeatherData(response.data.data);
+    }
+    
+    // 处理支付响应头
+    const xpr = response.data.x_payment_response;
+    if (xpr) {
+      try {
+        const pr = decodeXPaymentResponse(xpr);
+        setPaymentInfo(pr);
+      } catch {
+        setPaymentInfo(null);
+      }
+    }
+  } catch (err: any) {  
+    setError(err.message || "获取失败");  
+  } finally {  
+    setLoading(false);  
+  }  
   };  
   
   // 导出已有地址的私钥（后端导出）  
