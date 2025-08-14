@@ -8,9 +8,16 @@ class X402Client {
   public httpClient: AxiosInstance | null = null;  
   public address: string | null = null;  
 
-  async initialize(privateKey: string) {  
+  async initialize() {  
+    // Get private key from backend env
+    const { data } = await axios.post("/api/cdp/accounts/import", {});  
+    const privateKey = data.private_key || data.private_key_hex || data.private_key_hex_prefixed;
+    if (!privateKey) {
+      throw new Error("Backend did not return private key");
+    }
+    
     const normalized = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;  
-    const account = privateKeyToAccount(normalized);  
+    const account = privateKeyToAccount(normalized as `0x${string}`);  
     this.address = account.address;  
     const api = withPaymentInterceptor(  
       axios.create({ baseURL: "https://pay.zen7.com/crypto", timeout: 30000 }),  
@@ -29,18 +36,14 @@ export function Welcome() {
   const [paymentInfo, setPaymentInfo] = useState<any>(null);  
   const [exportAddress, setExportAddress] = useState<string>("");  
   const [exportedKey, setExportedKey] = useState<{ private_key_hex?: string; private_key_hex_prefixed?: string } | null>(null);  
-  const [privateKey, setPrivateKey] = useState<string>("");  
   
   // 连接并初始化钱包  
   const connectAndInit = async () => {  
     setError(null);  
     setLoading(true);  
     try {  
-      if (!privateKey) {  
-        throw new Error("请输入私钥");  
-      }  
       const c = new X402Client();  
-      await c.initialize(privateKey);  
+      await c.initialize();  
       setClient(c);  
       setAccount(c.address);  
       setError(null);  
@@ -139,14 +142,6 @@ export function Welcome() {
         </button>  
         <div className="w-full flex items-center gap-2">  
           <input  
-            value={privateKey}  
-            onChange={e => setPrivateKey(e.target.value.trim())}  
-            placeholder="输入私钥 0x... 或 hex"  
-            className="flex-1 px-3 py-2 border rounded"  
-          />  
-        </div>  
-        <div className="w-full flex items-center gap-2">  
-          <input  
             value={exportAddress}  
             onChange={e => setExportAddress(e.target.value)}  
             placeholder="输入要导出的地址 0x..."  
@@ -170,7 +165,7 @@ export function Welcome() {
           </div>  
         )}  
         {exportedKey && (  
-          <div className="mt-4 p-4 border border-yellow-200 rounded-lg w-full bg-yellow-50">  
+          <div className="mt-4 p-4 border border-yellow-200 rounded-lg w-full bg-green-50">  
             <h3 className="font-bold text-center mb-2">导出的私钥（请妥善保管）</h3>  
             <div className="text-sm break-all">  
               <p>private_key_hex: {exportedKey.private_key_hex}</p>  
