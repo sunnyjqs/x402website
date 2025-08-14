@@ -1,93 +1,46 @@
 import { useState } from "react";  
 import axios, { type AxiosInstance } from "axios";  
-import { withPaymentInterceptor, decodeXPaymentResponse } from "x402-axios";  
-import { createWalletClient, custom, publicActions } from "viem";  
-import { base } from "viem/chains";  
+import { withPaymentInterceptor, decodeXPaymentResponse } from "x402-axios";
+import { privateKeyToAccount } from "viem/accounts";
+// Frontend calls our backend (cdp.py FastAPI)
   
-class X402MetaMaskClient {  
-  public walletClient: any = null;  
+class X402Client {  
   public httpClient: AxiosInstance | null = null;  
   public address: string | null = null;  
-  
-  async initialize() {  
-    this.walletClient = await this.createMetaMaskWallet();  
-    this.address = this.walletClient.account.address;  
-  
-    const axiosInstance = axios.create({  
-      baseURL: "https://pay.zen7.com/crypto",  
-      timeout: 30000,
-    });  
-    this.httpClient = withPaymentInterceptor(axiosInstance, this.walletClient);  
-  }  
-  
-  private async createMetaMaskWallet() {  
-    if (!(window as any).ethereum) {  
-      throw new Error("请安装 MetaMask 钱包");  
-    }  
-    await (window as any).ethereum.request({ method: "eth_requestAccounts" });  
-    await this.switchToBaseNetwork();  
-  
-    // 创建基础客户端    
-    const baseClient = createWalletClient({    
-      chain: base,    
-      transport: custom((window as any).ethereum),    
-    }).extend(publicActions)    
-        
-    // 获取当前账户    
-    const accounts = await baseClient.getAddresses()    
-    if (!accounts || accounts.length === 0) {    
-      throw new Error('未找到连接的账户')    
-    }  
-      
-    return createWalletClient({  
-      chain: base,  
-      transport: custom((window as any).ethereum),  
-      account: accounts[0],  
-    }).extend(publicActions);  
-  }  
-  
-  private async switchToBaseNetwork() {  
-    try {  
-      await (window as any).ethereum.request({  
-        method: "wallet_switchEthereumChain",  
-        params: [{ chainId: "0x2105" }],  
-      });  
-    } catch (switchError: any) {  
-      if (switchError.code === 4902) {  
-        await (window as any).ethereum.request({  
-          method: "wallet_addEthereumChain",  
-          params: [{  
-            chainId: "0x2105",  
-            chainName: "Base Sepolia",  
-            nativeCurrency: {  
-              name: "Ethereum",  
-              symbol: "ETH",  
-              decimals: 18,  
-            },  
-            rpcUrls: ["https://sepolia.base.org"],  
-            blockExplorerUrls: ["https://sepolia.basescan.org"],  
-          }],  
-        });  
-      }  
-    }  
+
+  async initialize(privateKey: string) {  
+    const normalized = privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`;  
+    const account = privateKeyToAccount(normalized);  
+    this.address = account.address;  
+    const api = withPaymentInterceptor(  
+      axios.create({ baseURL: "https://pay.zen7.com/crypto", timeout: 30000 }),  
+      account,  
+    );  
+    this.httpClient = api;  
   }  
 }  
   
 export function Welcome() {  
-  const [client, setClient] = useState<X402MetaMaskClient | null>(null);  
+  const [client, setClient] = useState<X402Client | null>(null);  
   const [account, setAccount] = useState<string | null>(null);  
   const [loading, setLoading] = useState(false);  
   const [error, setError] = useState<string | null>(null);  
   const [weatherData, setWeatherData] = useState<any>(null);  
   const [paymentInfo, setPaymentInfo] = useState<any>(null);  
+  const [exportAddress, setExportAddress] = useState<string>("");  
+  const [exportedKey, setExportedKey] = useState<{ private_key_hex?: string; private_key_hex_prefixed?: string } | null>(null);  
+  const [privateKey, setPrivateKey] = useState<string>("");  
   
   // 连接并初始化钱包  
   const connectAndInit = async () => {  
     setError(null);  
     setLoading(true);  
     try {  
-      const c = new X402MetaMaskClient();  
-      await c.initialize();  
+      if (!privateKey) {  
+        throw new Error("请输入私钥");  
+      }  
+      const c = new X402Client();  
+      await c.initialize(privateKey);  
       setClient(c);  
       setAccount(c.address);  
       setError(null);  
@@ -107,9 +60,9 @@ export function Welcome() {
     setError(null);  
   };  
   
-  // 查询天气  
+  // 直接请求 x402 付费 API（前端使用私钥签名）
   const fetchWeatherData = async () => {  
-    if (!client) {  
+    if (!client || !client.httpClient) {  
       setError("请先连接钱包");  
       return;  
     }  
@@ -117,16 +70,38 @@ export function Welcome() {
     setError(null);  
     setPaymentInfo(null);  
     try {  
-      const response = await client.httpClient!.get("/item1");  
+      const response = await client.httpClient.get("/item1");  
       setWeatherData(response.data);  
-      console.log("x-payment-response", response.headers["x-payment-response"]);
-      if (response.headers["x-payment-response"]) {  
-        const paymentResponse = decodeXPaymentResponse(response.headers["x-payment-response"]); 
-        console.log("paymentResponse", paymentResponse);
-        setPaymentInfo(paymentResponse);  
+      const xpr = response.headers["x-payment-response"];  
+      if (xpr) {  
+        try {  
+          const pr = decodeXPaymentResponse(xpr);  
+          setPaymentInfo(pr);  
+        } catch {  
+          setPaymentInfo(null);  
+        }  
       }  
     } catch (err: any) {  
-      setError(err.message || "获取天气失败");  
+      setError(err.message || "获取失败");  
+    } finally {  
+      setLoading(false);  
+    }  
+  };  
+  
+  // 导出已有地址的私钥（后端导出）  
+  const exportPrivateKey = async () => {  
+    if (!exportAddress) {  
+      setError("请输入地址");  
+      return;  
+    }  
+    setLoading(true);  
+    setError(null);  
+    setExportedKey(null);  
+    try {  
+      const resp = await axios.post("/api/cdp/accounts/export", { address: exportAddress });  
+      setExportedKey(resp.data);  
+    } catch (e: any) {  
+      setError(e?.response?.data?.detail || e.message || "导出失败");  
     } finally {  
       setLoading(false);  
     }  
@@ -140,7 +115,7 @@ export function Welcome() {
           className="px-4 py-2 bg-orange-500 text-white rounded-lg mb-4"  
           disabled={loading || !!client}  
         >  
-          连接并初始化MetaMask  
+          连接后端钱包  
         </button>  
         {account && (  
           <div className="p-2 bg-blue-50 border border-blue-100 rounded-lg w-full text-center">  
@@ -160,8 +135,31 @@ export function Welcome() {
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"  
           disabled={loading || !client}  
         >  
-          {loading ? "加载中..." : "查询天气"}  
+          {loading ? "加载中..." : "查询 item1（付费）"}  
         </button>  
+        <div className="w-full flex items-center gap-2">  
+          <input  
+            value={privateKey}  
+            onChange={e => setPrivateKey(e.target.value.trim())}  
+            placeholder="输入私钥 0x... 或 hex"  
+            className="flex-1 px-3 py-2 border rounded"  
+          />  
+        </div>  
+        <div className="w-full flex items-center gap-2">  
+          <input  
+            value={exportAddress}  
+            onChange={e => setExportAddress(e.target.value)}  
+            placeholder="输入要导出的地址 0x..."  
+            className="flex-1 px-3 py-2 border rounded"  
+          />  
+          <button  
+            onClick={exportPrivateKey}  
+            className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"  
+            disabled={loading}  
+          >  
+            导出私钥  
+          </button>  
+        </div>  
         {error && <p className="text-red-500">{error}</p>}  
         {weatherData && (  
           <div className="mt-4 p-4 border rounded-lg w-full">  
@@ -169,6 +167,15 @@ export function Welcome() {
             <pre className="whitespace-pre-wrap overflow-auto">  
               {JSON.stringify(weatherData, null, 2)}  
             </pre>  
+          </div>  
+        )}  
+        {exportedKey && (  
+          <div className="mt-4 p-4 border border-yellow-200 rounded-lg w-full bg-yellow-50">  
+            <h3 className="font-bold text-center mb-2">导出的私钥（请妥善保管）</h3>  
+            <div className="text-sm break-all">  
+              <p>private_key_hex: {exportedKey.private_key_hex}</p>  
+              <p>private_key_hex_prefixed: {exportedKey.private_key_hex_prefixed}</p>  
+            </div>  
           </div>  
         )}  
         {paymentInfo && (  
