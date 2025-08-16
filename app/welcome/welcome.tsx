@@ -142,7 +142,6 @@ export function Welcome() {
   const [metamaskError, setMetamaskError] = useState<string | null>(null);
   const [permitSignature, setPermitSignature] = useState<any>(null);
   const [permitParams, setPermitParams] = useState({
-    spender: "",
     value: "1000000", // 1 USDC (6位小数)
     deadline: Math.floor(Date.now() / 1000) + 3600 // 1小时后过期
   });
@@ -173,39 +172,81 @@ export function Welcome() {
     setError(null);  
   };  
   
-  // 直接请求 x402 付费 API（前端使用私钥签名）
+  // 直接请求 x402 付费 API
   const fetchWeatherData = async () => {  
     if (!client || !client.httpClient) {  
       setError("请先连接钱包");  
       return;  
     }  
+  
     setLoading(true);  
     setError(null);  
     setPaymentInfo(null);  
-      try {  
-    // 调用后端代理，后端使用私钥处理 x402 请求
-    const response = await client.httpClient.get("/item1");
-    
-    // 处理响应数据
-    if (response.data.data) {
-      setWeatherData(response.data.data);
-    }
-    
-    // 处理支付响应头
-    const xpr = response.data.x_payment_response;
-    if (xpr) {
-      try {
-        const pr = decodeXPaymentResponse(xpr);
-        setPaymentInfo(pr);
-      } catch {
-        setPaymentInfo(null);
+
+    try {  
+      // 调用 x402 付费接口
+      console.log("🔄 调用 x402 付费接口...");
+      const response = await client.httpClient.get("/item1");
+      
+      // 处理响应数据
+      if (response.data.data) {
+        setWeatherData(response.data.data);
       }
+      
+      // 处理支付响应头
+      const xpr = response.data.x_payment_response;
+      if (xpr) {
+        try {
+          const pr = decodeXPaymentResponse(xpr);
+          setPaymentInfo(pr);
+        } catch {
+          setPaymentInfo(null);
+        }
+      }
+    } catch (err: any) {  
+      setError(err.message || "获取失败");  
+    } finally {  
+      setLoading(false);  
+    }  
+  };
+
+  // 新增：执行 permit 授权
+  const executePermit = async () => {
+    if (!client || !client.httpClient || !permitSignature) {
+      setError("请先连接钱包并生成 Permit 签名");
+      return;
     }
-  } catch (err: any) {  
-    setError(err.message || "获取失败");  
-  } finally {  
-    setLoading(false);  
-  }  
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      console.log("🔄 执行 permit 授权...");
+      
+      const permitResponse = await client.httpClient.post("/execute-permit", {
+        owner: permitSignature.owner,
+        spender: permitSignature.spender,
+        value: permitSignature.value,
+        deadline: permitSignature.deadline,
+        v: permitSignature.v,
+        r: permitSignature.r,
+        s: permitSignature.s
+      });
+      
+      console.log("✅ Permit 授权成功:", permitResponse.data);
+      
+      // 更新 permitSignature，添加交易哈希
+      setPermitSignature((prev: any) => ({
+        ...prev,
+        permitTxHash: permitResponse.data.txHash,
+        message: `授权已建立！交易哈希: ${permitResponse.data.txHash}`
+      }));
+      
+    } catch (err: any) {
+      setError(err.message || "Permit 授权失败");
+    } finally {
+      setLoading(false);
+    }
   };  
   
   // 导出已有地址的私钥（后端导出）  
@@ -271,8 +312,8 @@ export function Welcome() {
 
   // 新增：执行 EIP-2612 Permit 签名
   const executePermitSignature = async () => {
-    if (!metamaskAccount || !permitParams.spender || !permitParams.value) {
-      setMetamaskError("请填写完整信息");
+    if (!metamaskAccount || !account || !permitParams.value) {
+      setMetamaskError("请确保已连接 MetaMask 和后端钱包");
       return;
     }
 
@@ -287,8 +328,15 @@ export function Welcome() {
     setPermitSignature(null);
 
     try {
-      // 获取当前 nonce（这里简化处理，实际应该从合约获取）
-      const nonce = 0; // 简化处理，实际应该调用合约的 nonces 函数
+      // 获取当前 nonce（从 USDC 合约获取）
+      const nonceData = await ethereum.request({
+        method: 'eth_call',
+        params: [{
+          to: BASE_USDC_CONFIG.usdcAddress,
+          data: '0x7ecebe00' + metamaskAccount.slice(2).padStart(64, '0') // nonces(address) function selector
+        }, 'latest']
+      });
+      const nonce = parseInt(nonceData, 16);
       
       // 获取当前网络 chainId
       const chainId = await ethereum.request({ method: 'eth_chainId' });
@@ -299,7 +347,7 @@ export function Welcome() {
       const types = getPermitType();
       const message = {
         owner: metamaskAccount,
-        spender: permitParams.spender,
+        spender: account, // 使用后端钱包地址作为 spender
         value: permitParams.value,
         nonce: nonce,
         deadline: permitParams.deadline,
@@ -323,7 +371,7 @@ export function Welcome() {
 
       setPermitSignature({
         owner: metamaskAccount,
-        spender: permitParams.spender,
+        spender: account, // 使用后端钱包地址作为 spender
         value: permitParams.value,
         nonce: nonce,
         deadline: permitParams.deadline,
@@ -331,7 +379,7 @@ export function Welcome() {
         r: r,
         s: s,
         v: v,
-        message: `已为地址 ${permitParams.spender} 创建 permit 授权，金额: ${parseInt(permitParams.value) / 1000000} USDC`
+        message: `已为地址 ${account} 创建 permit 授权，金额: ${parseInt(permitParams.value) / 1000000} USDC`
       });
 
     } catch (error: any) {
@@ -369,125 +417,157 @@ export function Welcome() {
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"  
           disabled={loading || !client}  
         >  
-          {loading ? "加载中..." : "查询 item1（付费）"}  
+          {loading ? "处理中..." : "查询 item1（付费）"}  
         </button>  
 
-        {/* 新增：MetaMask EIP-2612 Permit 功能区域 - 完全独立 */}
-        <div className="w-full p-4 border border-green-200 rounded-lg bg-green-50">
-          <h3 className="font-bold text-center mb-4 text-green-800">MetaMask EIP-2612 Permit 功能 (Base USDC)</h3>
-          
-          {/* MetaMask 连接状态 */}
-          {!metamaskAccount ? (
-            <button
-              onClick={connectMetaMask}
-              className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400"
-              disabled={metamaskLoading}
-            >
-              {metamaskLoading ? "连接中..." : "连接 MetaMask"}
-            </button>
-          ) : (
-            <div className="mb-4 p-3 bg-white rounded border">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">MetaMask 地址:</span>
-                <span className="font-mono text-sm">
-                  {`${metamaskAccount.slice(0, 6)}...${metamaskAccount.slice(-4)}`}
-                </span>
-                <button
-                  onClick={disconnectMetaMask}
-                  className="px-2 py-1 bg-red-200 text-red-700 rounded text-xs hover:bg-red-300"
-                >
-                  断开
-                </button>
+        {/* 新增：MetaMask EIP-2612 Permit 功能区域 */}
+        {account && (
+          <div className="w-full p-4 border border-green-200 rounded-lg bg-green-50">
+            <h3 className="font-bold text-center mb-4 text-green-800">EIP-2612 Permit 授权流程 (Base USDC)</h3>
+            <p className="text-sm text-center mb-4 text-green-700">
+              流程：1. 连接后端钱包 ✅ → 2. 连接 MetaMask {metamaskAccount ? "✅" : ""} → 3. 生成 Permit 签名 {permitSignature ? "✅" : ""} → 4. 执行 Permit 授权 {permitSignature?.permitTxHash ? "✅" : ""} → 5. 使用授权支付
+            </p>
+            
+            {/* MetaMask 连接状态 */}
+            {!metamaskAccount ? (
+              <button
+                onClick={connectMetaMask}
+                className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400"
+                disabled={metamaskLoading}
+              >
+                {metamaskLoading ? "连接中..." : "步骤2: 连接 MetaMask"}
+              </button>
+            ) : (
+              <div className="mb-4 p-3 bg-white rounded border">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-green-800 mb-1">✅ MetaMask 已连接</p>
+                    <p className="text-xs text-green-700">地址: {`${metamaskAccount.slice(0, 6)}...${metamaskAccount.slice(-4)}`}</p>
+                  </div>
+                  <button
+                    onClick={disconnectMetaMask}
+                    className="px-2 py-1 bg-red-200 text-red-700 rounded text-xs hover:bg-red-300"
+                  >
+                    断开
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Permit 参数输入 - 仅在连接 MetaMask 后显示 */}
-          {metamaskAccount && (
-            <>
-              <div className="space-y-3 mb-4">
-                <div>
-                  <label className="block text-sm text-gray-600 mb-1">授权地址 (Spender):</label>
-                  <input
-                    value={permitParams.spender}
-                    onChange={e => setPermitParams(prev => ({ ...prev, spender: e.target.value }))}
-                    placeholder="0x..."
-                    className="w-full px-3 py-2 border rounded text-sm"
-                  />
+            {/* Permit 参数输入 - 仅在连接 MetaMask 后显示 */}
+            {metamaskAccount && (
+              <>
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">授权地址 (Spender):</label>
+                    <div className="w-full px-3 py-2 bg-gray-100 border rounded text-sm text-gray-700">
+                      {account ? `${account.slice(0, 6)}...${account.slice(-4)}` : "未设置"}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      自动设置为后端钱包地址
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-600 mb-1">授权金额 (USDC):</label>
+                    <input
+                      type="number"
+                      value={parseInt(permitParams.value) / 1000000}
+                      onChange={e => setPermitParams(prev => ({ 
+                        ...prev, 
+                        value: Math.floor(parseFloat(e.target.value || "0") * 1000000).toString() 
+                      }))}
+                      placeholder="1.0"
+                      step="0.000001"
+                      className="w-full px-3 py-2 border rounded text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-600 mb-1">过期时间 (秒):</label>
+                    <input
+                      type="number"
+                      value={permitParams.deadline - Math.floor(Date.now() / 1000)}
+                      onChange={e => setPermitParams(prev => ({ 
+                        ...prev, 
+                        deadline: Math.floor(Date.now() / 1000) + parseInt(e.target.value || "0") 
+                      }))}
+                      placeholder="3600"
+                      className="w-full px-3 py-2 border rounded text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      过期时间: {new Date(permitParams.deadline * 1000).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
+
+                {/* Execute Permit 按钮 */}
+                <button
+                  onClick={executePermitSignature}
+                  className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400"
+                  disabled={metamaskLoading || !account || !permitParams.value}
+                >
+                  {metamaskLoading ? "处理中..." : "步骤3: 执行 EIP-2612 Permit 签名"}
+                </button>
+              </>
+            )}
+
+            {/* Permit 签名结果显示 */}
+            {permitSignature && (
+              <div className="mt-4 p-3 bg-white rounded border">
+                <h4 className="font-semibold text-sm mb-2 text-green-800">✅ Permit 签名成功:</h4>
+                <p className="text-sm text-gray-700 mb-2">{permitSignature.message}</p>
                 
-                <div>
-                  <label className="text-sm text-gray-600 mb-1">授权金额 (USDC):</label>
-                  <input
-                    type="number"
-                    value={parseInt(permitParams.value) / 1000000}
-                    onChange={e => setPermitParams(prev => ({ 
-                      ...prev, 
-                      value: Math.floor(parseFloat(e.target.value || "0") * 1000000).toString() 
-                    }))}
-                    placeholder="1.0"
-                    step="0.000001"
-                    className="w-full px-3 py-2 border rounded text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-sm text-gray-600 mb-1">过期时间 (秒):</label>
-                  <input
-                    type="number"
-                    value={permitParams.deadline - Math.floor(Date.now() / 1000)}
-                    onChange={e => setPermitParams(prev => ({ 
-                      ...prev, 
-                      deadline: Math.floor(Date.now() / 1000) + parseInt(e.target.value || "0") 
-                    }))}
-                    placeholder="3600"
-                    className="w-full px-3 py-2 border rounded text-sm"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    过期时间: {new Date(permitParams.deadline * 1000).toLocaleString()}
+                {/* 如果还没有执行授权，显示执行授权按钮 */}
+                {!permitSignature.permitTxHash && (
+                  <div className="mt-3">
+                    <button
+                      onClick={executePermit}
+                      className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400"
+                      disabled={loading}
+                    >
+                      {loading ? "执行授权中..." : "步骤4: 执行 Permit 授权"}
+                    </button>
+                    <p className="text-xs text-blue-600 mt-2 text-center">
+                      点击此按钮让后端执行授权，建立实际的 USDC 授权（无需用户支付gas）
+                    </p>
+                  </div>
+                )}
+                
+                {/* 如果已经执行授权，显示交易哈希 */}
+                {permitSignature.permitTxHash && (
+                  <div className="mt-3 p-2 bg-green-100 border border-green-200 rounded">
+                    <p className="text-sm text-green-800 font-semibold">✅ 授权已建立！</p>
+                    <p className="text-xs text-green-700 mt-1">
+                      交易哈希: {permitSignature.permitTxHash}
+                    </p>
+                  </div>
+                )}
+                
+                <div className="text-xs text-gray-600 space-y-1 mt-3">
+                  <p>Owner: {`${permitSignature.owner.slice(0, 6)}...${permitSignature.owner.slice(-4)}`}</p>
+                  <p>Spender: {`${permitSignature.spender.slice(0, 6)}...${permitSignature.spender.slice(-4)}`}</p>
+                  <p>Value: {parseInt(permitSignature.value) / 1000000} USDC</p>
+                  <p>Nonce: {permitSignature.nonce}</p>
+                  <p>Deadline: {new Date(permitSignature.deadline * 1000).toLocaleString()}</p>
+                  <p>Signature v: {permitSignature.v}</p>
+                  <p>Signature r: {`${permitSignature.r.slice(0, 10)}...`}</p>
+                  <p>Signature s: {`${permitSignature.s.slice(0, 10)}...`}</p>
+                  <p className="text-xs text-green-600 mt-2">
+                    完整签名: {permitSignature.signature}
                   </p>
                 </div>
               </div>
+            )}
 
-              {/* Execute Permit 按钮 */}
-              <button
-                onClick={executePermitSignature}
-                className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400"
-                disabled={metamaskLoading || !permitParams.spender || !permitParams.value}
-              >
-                {metamaskLoading ? "处理中..." : "执行 EIP-2612 Permit 签名"}
-              </button>
-            </>
-          )}
-
-          {/* Permit 签名结果显示 */}
-          {permitSignature && (
-            <div className="mt-4 p-3 bg-white rounded border">
-              <h4 className="font-semibold text-sm mb-2 text-green-800">Permit 签名成功:</h4>
-              <p className="text-sm text-gray-700 mb-2">{permitSignature.message}</p>
-              <div className="text-xs text-gray-600 space-y-1">
-                <p>Owner: {`${permitSignature.owner.slice(0, 6)}...${permitSignature.owner.slice(-4)}`}</p>
-                <p>Spender: {`${permitSignature.spender.slice(0, 6)}...${permitSignature.spender.slice(-4)}`}</p>
-                <p>Value: {parseInt(permitSignature.value) / 1000000} USDC</p>
-                <p>Nonce: {permitSignature.nonce}</p>
-                <p>Deadline: {new Date(permitSignature.deadline * 1000).toLocaleString()}</p>
-                <p>Signature v: {permitSignature.v}</p>
-                <p>Signature r: {`${permitSignature.r.slice(0, 10)}...`}</p>
-                <p>Signature s: {`${permitSignature.s.slice(0, 10)}...`}</p>
-                <p className="text-xs text-green-600 mt-2">
-                  完整签名: {permitSignature.signature}
-                </p>
+            {/* MetaMask 错误显示 */}
+            {metamaskError && (
+              <div className="mt-4 p-3 bg-red-100 border border-red-200 rounded">
+                <p className="text-sm text-red-700">{metamaskError}</p>
               </div>
-            </div>
-          )}
-
-          {/* MetaMask 错误显示 */}
-          {metamaskError && (
-            <div className="mt-4 p-3 bg-red-100 border border-red-200 rounded">
-              <p className="text-sm text-red-700">{metamaskError}</p>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         <div className="w-full flex items-center gap-2">  
           <input  
