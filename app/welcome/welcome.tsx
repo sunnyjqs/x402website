@@ -11,6 +11,30 @@ declare global {
   }
 }
 
+// 支持多网络配置
+const NETWORKS = {
+  mainnet: {
+    key: "mainnet",
+    name: "Base 主网",
+    chainId: 8453,
+    chainIdHex: "0x2105",
+    usdcAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    usdcName: "USD Coin",
+    usdcVersion: "1",
+    rpcUrl: "https://mainnet.base.org"
+  },
+  sepolia: {
+    key: "sepolia",
+    name: "Base Sepolia 测试网",
+    chainId: 84532,
+    chainIdHex: "0x14a34",
+    usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // TODO: 替换为测试网 USDC 地址
+    usdcName: "USDC",
+    usdcVersion: "2",
+    rpcUrl: "https://sepolia.base.org"
+  }
+};
+
 // EIP-2612 相关常量 - Base 网络 USDC
 const BASE_USDC_CONFIG = {
   chainId: 8453, // Base mainnet
@@ -30,56 +54,11 @@ const checkMetaMask = () => {
   return null;
 };
 
-// 检查是否在 Base 网络
-const checkBaseNetwork = async (ethereum: any) => {
-  try {
-    const chainId = await ethereum.request({ method: 'eth_chainId' });
-    return chainId === '0x2105'; // Base mainnet chainId in hex
-  } catch (error) {
-    return false;
-  }
-};
-
-// 切换到 Base 网络
-const switchToBaseNetwork = async (ethereum: any) => {
-  try {
-    await ethereum.request({
-      method: 'wallet_switchEthereumChain',
-      params: [{ chainId: '0x2105' }], // Base mainnet
-    });
-    return true;
-  } catch (switchError: any) {
-    // 如果网络不存在，尝试添加网络
-    if (switchError.code === 4902) {
-      try {
-        await ethereum.request({
-          method: 'wallet_addEthereumChain',
-          params: [{
-            chainId: '0x2105',
-            chainName: 'Base',
-            nativeCurrency: {
-              name: 'ETH',
-              symbol: 'ETH',
-              decimals: 18,
-            },
-            rpcUrls: ['https://mainnet.base.org'],
-            blockExplorerUrls: ['https://basescan.org'],
-          }],
-        });
-        return true;
-      } catch (addError) {
-        return false;
-      }
-    }
-    return false;
-  }
-};
-
 // 获取域名分隔符
-const getDomainSeparator = (contractAddress: string, chainId: number) => {
+const getDomainSeparator = (contractAddress: string, chainId: number, tokenName: string, tokenVersion: string) => {
   const domain = {
-    name: BASE_USDC_CONFIG.usdcName,
-    version: BASE_USDC_CONFIG.usdcVersion,
+    name: tokenName,
+    version: tokenVersion,
     chainId: chainId,
     verifyingContract: contractAddress,
   };
@@ -127,6 +106,10 @@ class X402Client {
 }  
   
 export function Welcome() {  
+  // 新增：网络选择
+  const [selectedNetwork, setSelectedNetwork] = useState<"mainnet" | "sepolia">("mainnet");
+  const network = NETWORKS[selectedNetwork];
+
   const [client, setClient] = useState<X402Client | null>(null);  
   const [account, setAccount] = useState<string | null>(null);  
   const [loading, setLoading] = useState(false);  
@@ -145,6 +128,11 @@ export function Welcome() {
     value: "1000000", // 1 USDC (6位小数)
     deadline: Math.floor(Date.now() / 1000) + 3600 // 1小时后过期
   });
+  
+  // 新增：余额显示状态
+  const [backendEthBalance, setBackendEthBalance] = useState<string>("0");
+  const [backendUsdcBalance, setBackendUsdcBalance] = useState<string>("0");
+  const [balanceLoading, setBalanceLoading] = useState(false);
 
   // 连接并初始化钱包  
   const connectAndInit = async () => {  
@@ -155,7 +143,15 @@ export function Welcome() {
       await c.initialize();  
       setClient(c);  
       setAccount(c.address);  
-      setError(null);  
+      setError(null);
+      
+      // 等待状态更新后立即获取余额
+      setTimeout(() => {
+        if (c.address) {
+          console.log("🔄 连接后端钱包成功，开始获取余额...");
+          fetchBackendBalance();
+        }
+      }, 500);  
     } catch (e: any) {  
       setError(e.message || "连接失败");  
     } finally {  
@@ -210,6 +206,60 @@ export function Welcome() {
     }  
   };
 
+  // 新增：获取后端钱包余额
+  const fetchBackendBalance = async () => {
+    if (!account || !network) return;
+    
+    setBalanceLoading(true);
+    try {
+      const ethereum = checkMetaMask();
+      if (!ethereum) return;
+      
+      console.log(`🔍 获取余额 - 地址: ${account}, 网络: ${network.name}, USDC合约: ${network.usdcAddress}`);
+      
+      // 获取 ETH 余额
+      const ethBalance = await ethereum.request({
+        method: 'eth_getBalance',
+        params: [account, 'latest']
+      });
+      const ethBalanceNumber = parseInt(ethBalance, 16) / 1e18;
+      setBackendEthBalance(ethBalanceNumber.toFixed(6));
+      console.log(`💰 ETH 余额: ${ethBalance} (wei) = ${ethBalanceNumber} ETH`);
+      
+      // 获取 USDC 余额
+      try {
+        const usdcBalance = await ethereum.request({
+          method: 'eth_call',
+          params: [{
+            to: network.usdcAddress,
+            data: '0x70a08231' + account.slice(2).padStart(64, '0') // balanceOf(address) function selector
+          }, 'latest']
+        });
+        
+        if (usdcBalance && usdcBalance !== '0x') {
+          const usdcBalanceNumber = parseInt(usdcBalance, 16) / 1e6;
+          setBackendUsdcBalance(usdcBalanceNumber.toFixed(6));
+          console.log(`💰 USDC 余额: ${usdcBalance} (wei) = ${usdcBalanceNumber} USDC`);
+        } else {
+          setBackendUsdcBalance("0.000000");
+          console.log(`💰 USDC 余额: 0 USDC`);
+        }
+      } catch (usdcError) {
+        console.error("USDC 余额获取失败:", usdcError);
+        setBackendUsdcBalance("0.000000");
+      }
+      
+      console.log(`✅ 余额获取完成 - ETH: ${ethBalanceNumber.toFixed(6)}, USDC: ${backendUsdcBalance}`);
+      
+    } catch (error) {
+      console.error("获取余额失败:", error);
+      setBackendEthBalance("0.000000");
+      setBackendUsdcBalance("0.000000");
+    } finally {
+      setBalanceLoading(false);
+    }
+  };
+
   // 新增：执行 permit 授权
   const executePermit = async () => {
     if (!client || !client.httpClient || !permitSignature) {
@@ -222,6 +272,7 @@ export function Welcome() {
 
     try {
       console.log("🔄 执行 permit 授权...");
+      console.log(`🔍 检查后端钱包余额 - ETH: ${backendEthBalance}, USDC: ${backendUsdcBalance}`);
       
       const permitResponse = await client.httpClient.post("/execute-permit", {
         owner: permitSignature.owner,
@@ -230,7 +281,8 @@ export function Welcome() {
         deadline: permitSignature.deadline,
         v: permitSignature.v,
         r: permitSignature.r,
-        s: permitSignature.s
+        s: permitSignature.s,
+        network: selectedNetwork  // 新增：传递当前选择的网络
       });
       
       console.log("✅ Permit 授权成功:", permitResponse.data);
@@ -285,12 +337,12 @@ export function Welcome() {
       const account = accounts[0];
       setMetamaskAccount(account);
 
-      // 检查并切换到 Base 网络
-      const isBaseNetwork = await checkBaseNetwork(ethereum);
-      if (!isBaseNetwork) {
-        const switched = await switchToBaseNetwork(ethereum);
+      // 检查并切换到当前选中网络
+      const isCurrentNetwork = await checkCurrentNetwork(ethereum);
+      if (!isCurrentNetwork) {
+        const switched = await switchToCurrentNetwork(ethereum);
         if (!switched) {
-          setMetamaskError("无法切换到 Base 网络");
+          setMetamaskError("无法切换到当前网络");
           return;
         }
       }
@@ -308,6 +360,51 @@ export function Welcome() {
     setMetamaskAccount(null);
     setPermitSignature(null);
     setMetamaskError(null);
+  };
+
+  // 检查是否在当前选中网络
+  const checkCurrentNetwork = async (ethereum: any) => {
+    try {
+      const chainId = await ethereum.request({ method: 'eth_chainId' });
+      return chainId === network.chainIdHex;
+    } catch (error) {
+      return false;
+    }
+  };
+
+  // 切换到当前选中网络
+  const switchToCurrentNetwork = async (ethereum: any) => {
+    try {
+      await ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: network.chainIdHex }],
+      });
+      return true;
+    } catch (switchError: any) {
+      // 如果网络不存在，尝试添加网络
+      if (switchError.code === 4902) {
+        try {
+          await ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: network.chainIdHex,
+              chainName: network.name,
+              nativeCurrency: {
+                name: 'ETH',
+                symbol: 'ETH',
+                decimals: 18,
+              },
+              rpcUrls: [network.rpcUrl],
+              blockExplorerUrls: [network.key === "mainnet" ? 'https://basescan.org' : 'https://sepolia.basescan.org'],
+            }],
+          });
+          return true;
+        } catch (addError) {
+          return false;
+        }
+      }
+      return false;
+    }
   };
 
   // 新增：执行 EIP-2612 Permit 签名
@@ -332,7 +429,7 @@ export function Welcome() {
       const nonceData = await ethereum.request({
         method: 'eth_call',
         params: [{
-          to: BASE_USDC_CONFIG.usdcAddress,
+          to: network.usdcAddress,
           data: '0x7ecebe00' + metamaskAccount.slice(2).padStart(64, '0') // nonces(address) function selector
         }, 'latest']
       });
@@ -343,12 +440,12 @@ export function Welcome() {
       const chainIdNumber = parseInt(chainId, 16);
 
       // 准备签名数据
-      const domain = getDomainSeparator(BASE_USDC_CONFIG.usdcAddress, chainIdNumber);
+      const domain = getDomainSeparator(network.usdcAddress, chainIdNumber, network.usdcName, network.usdcVersion);
       const types = getPermitType();
       const message = {
         owner: metamaskAccount,
         spender: account, // 使用后端钱包地址作为 spender
-        value: permitParams.value,
+        value: parseInt(permitParams.value),
         nonce: nonce,
         deadline: permitParams.deadline,
       };
@@ -388,10 +485,60 @@ export function Welcome() {
       setMetamaskLoading(false);
     }
   };
+
+  // 新增：执行 transferFrom（从 owner 转账到后端钱包自己）
+  const executeTransferFrom = async () => {
+    if (!client || !client.httpClient || !permitSignature) {
+      setError("请先完成 Permit 签名与授权");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const resp = await client.httpClient.post("/transfer-from", {
+        owner: permitSignature.owner,
+        amount: permitSignature.value, // 与 permit 的授权额度一致或更小
+        network: selectedNetwork,
+      });
+
+      console.log("✅ transferFrom 成功:", resp.data);
+      alert(`transferFrom 成功: tx=${resp.data.txHash}`);
+      // 刷新余额
+      setTimeout(() => fetchBackendBalance(), 600);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || e.message || "transferFrom 失败");
+    } finally {
+      setLoading(false);
+    }
+  };
   
   return (  
     <main className="flex items-center justify-center pt-16 pb-4">  
       <div className="flex-1 flex flex-col items-center gap-16 min-h-0">  
+        {/* 新增：网络选择器 */}
+        <div className="w-full flex items-center gap-2 mb-2">
+          <label className="text-sm font-semibold text-gray-700">选择网络：</label>
+          <select
+            value={selectedNetwork}
+            onChange={e => {
+              const newNetwork = e.target.value as "mainnet" | "sepolia";
+              setSelectedNetwork(newNetwork);
+              // 网络切换后，如果有已连接的钱包，自动刷新余额
+              if (account) {
+                setTimeout(() => {
+                  console.log(`🔄 网络切换到 ${NETWORKS[newNetwork].name}，自动刷新余额...`);
+                  fetchBackendBalance();
+                }, 300);
+              }
+            }}
+            className="px-2 py-1 border rounded text-sm"
+          >
+            <option value="mainnet">Base 主网</option>
+            <option value="sepolia">Base Sepolia 测试网</option>
+          </select>
+        </div>
         <button  
           onClick={connectAndInit}  
           className="px-4 py-2 bg-orange-500 text-white rounded-lg mb-4"  
@@ -400,16 +547,44 @@ export function Welcome() {
           连接后端钱包  
         </button>  
         {account && (  
-          <div className="p-2 bg-blue-50 border border-blue-100 rounded-lg w-full text-center">  
-            <p className="text-xs text-blue-700">  
-              钱包地址: {`${account.slice(0, 6)}...${account.slice(-4)}`}  
-            </p>  
-            <button  
-              onClick={disconnect}  
-              className="ml-4 px-2 py-1 bg-gray-300 text-gray-700 rounded"  
-            >  
-              断开连接  
-            </button>  
+          <div className="p-4 bg-blue-50 border border-blue-100 rounded-lg w-full text-center">  
+            <p className="text-xs text-blue-700 mb-2">  
+              后端钱包地址: {`${account.slice(0, 6)}...${account.slice(-4)}`}  
+            </p>
+            
+                         {/* 余额显示 */}
+             <div className="flex justify-center gap-4 mb-3 text-xs">
+               <div className="bg-white px-3 py-1 rounded border">
+                 <span className="text-gray-600">ETH:</span> 
+                 <span className="ml-1 font-mono">{balanceLoading ? "..." : backendEthBalance}</span>
+               </div>
+               <div className="bg-white px-3 py-1 rounded border">
+                 <span className="text-gray-600">USDC:</span> 
+                 <span className="ml-1 font-mono">{balanceLoading ? "..." : backendUsdcBalance}</span>
+               </div>
+             </div>
+             
+             {/* 调试信息 */}
+             <div className="text-xs text-gray-500 mb-2">
+               <p>当前网络: {network.name}</p>
+               <p>USDC合约: {`${network.usdcAddress.slice(0, 8)}...${network.usdcAddress.slice(-6)}`}</p>
+             </div>
+            
+            <div className="flex justify-center gap-2">
+              <button  
+                onClick={fetchBackendBalance}  
+                className="px-2 py-1 bg-blue-200 text-blue-700 rounded text-xs hover:bg-blue-300"  
+                disabled={balanceLoading}
+              >  
+                {balanceLoading ? "刷新中..." : "刷新余额"}  
+              </button>
+              <button  
+                onClick={disconnect}  
+                className="px-2 py-1 bg-gray-300 text-gray-700 rounded text-xs"  
+              >  
+                断开连接  
+              </button>  
+            </div>
           </div>  
         )}  
         <button  
@@ -541,6 +716,18 @@ export function Welcome() {
                     <p className="text-xs text-green-700 mt-1">
                       交易哈希: {permitSignature.permitTxHash}
                     </p>
+                    <div className="mt-3">
+                      <button
+                        onClick={executeTransferFrom}
+                        className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:bg-gray-400"
+                        disabled={loading}
+                      >
+                        {loading ? "执行中..." : "步骤5: 使用授权 transferFrom 到后端钱包"}
+                      </button>
+                      <p className="text-xs text-purple-700 mt-2 text-center">
+                        点击后，后端钱包将使用你对它的授权，从你的地址转入 USDC 到后端钱包
+                      </p>
+                    </div>
                   </div>
                 )}
                 
