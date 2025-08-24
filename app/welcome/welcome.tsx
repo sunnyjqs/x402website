@@ -23,15 +23,25 @@ const NETWORKS = {
     usdcVersion: "1",
     rpcUrl: "https://mainnet.base.org"
   },
-  sepolia: {
-    key: "sepolia",
+  baseSepolia: {
+    key: "baseSepolia",
     name: "Base Sepolia 测试网",
     chainId: 84532,
     chainIdHex: "0x14a34",
-    usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // TODO: 替换为测试网 USDC 地址
+    usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     usdcName: "USDC",
     usdcVersion: "2",
     rpcUrl: "https://sepolia.base.org"
+  },
+  ethSepolia: {
+    key: "ethSepolia",
+    name: "以太坊 Sepolia 测试网",
+    chainId: 11155111,
+    chainIdHex: "0xaa36a7",
+    usdcAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+    usdcName: "USDC",
+    usdcVersion: "2",
+    rpcUrl: "https://sepolia.infura.io/v3/9511773c563f4094b07478fb1706488b"
   }
 };
 
@@ -107,7 +117,7 @@ class X402Client {
   
 export function Welcome() {  
   // 新增：网络选择
-  const [selectedNetwork, setSelectedNetwork] = useState<"mainnet" | "sepolia">("mainnet");
+  const [selectedNetwork, setSelectedNetwork] = useState<"mainnet" | "baseSepolia" | "ethSepolia">("mainnet");
   const network = NETWORKS[selectedNetwork];
 
   const [client, setClient] = useState<X402Client | null>(null);  
@@ -211,13 +221,39 @@ export function Welcome() {
     if (!account || !network) return;
     
     setBalanceLoading(true);
+    setError(null); // 清除之前的错误
+    
     try {
       const ethereum = checkMetaMask();
-      if (!ethereum) return;
+      if (!ethereum) {
+        setError("MetaMask 未连接");
+        return;
+      }
       
-      console.log(`🔍 获取余额 - 地址: ${account}, 网络: ${network.name}, USDC合约: ${network.usdcAddress}`);
+      console.log("🔍 开始获取余额...");
+      console.log(`📍 后端钱包地址: ${account}`);
+      console.log(`🌐 选择的网络: ${network.name} (${network.key})`);
+      console.log(`🔗 网络 Chain ID: ${network.chainId} (${network.chainIdHex})`);
+      console.log(`💎 USDC 合约地址: ${network.usdcAddress}`);
+      
+      // 检查 MetaMask 当前网络是否与选择的网络匹配
+      const currentChainId = await ethereum.request({ method: 'eth_chainId' });
+      const expectedChainId = network.chainIdHex;
+      
+      console.log(`🔍 MetaMask 当前网络: ${currentChainId}`);
+      console.log(`🎯 期望的网络: ${expectedChainId}`);
+      
+      if (currentChainId !== expectedChainId) {
+        const errorMsg = `MetaMask 网络不匹配！当前: ${currentChainId}, 期望: ${expectedChainId}`;
+        console.warn(`⚠️  ${errorMsg}`);
+        setError(errorMsg);
+        return;
+      }
+      
+      console.log("✅ 网络匹配确认！开始查询余额...");
       
       // 获取 ETH 余额
+      console.log("💰 查询 ETH 余额...");
       const ethBalance = await ethereum.request({
         method: 'eth_getBalance',
         params: [account, 'latest']
@@ -227,35 +263,55 @@ export function Welcome() {
       console.log(`💰 ETH 余额: ${ethBalance} (wei) = ${ethBalanceNumber} ETH`);
       
       // 获取 USDC 余额
+      console.log("💎 查询 USDC 余额...");
       try {
+        const balanceOfSelector = '0x70a08231'; // balanceOf(address)
+        const paddedAddress = account.slice(2).padStart(64, '0');
+        const callData = balanceOfSelector + paddedAddress;
+        
+        console.log(`📝 USDC 查询数据:`);
+        console.log(`   - 合约地址: ${network.usdcAddress}`);
+        console.log(`   - 函数选择器: ${balanceOfSelector}`);
+        console.log(`   - 参数地址: ${paddedAddress}`);
+        console.log(`   - 完整数据: ${callData}`);
+        
         const usdcBalance = await ethereum.request({
           method: 'eth_call',
           params: [{
             to: network.usdcAddress,
-            data: '0x70a08231' + account.slice(2).padStart(64, '0') // balanceOf(address) function selector
+            data: callData
           }, 'latest']
         });
+        
+        console.log(`📊 USDC 原始响应: ${usdcBalance}`);
         
         if (usdcBalance && usdcBalance !== '0x') {
           const usdcBalanceNumber = parseInt(usdcBalance, 16) / 1e6;
           setBackendUsdcBalance(usdcBalanceNumber.toFixed(6));
-          console.log(`💰 USDC 余额: ${usdcBalance} (wei) = ${usdcBalanceNumber} USDC`);
+          console.log(`✅ USDC 余额: ${usdcBalance} (wei) = ${usdcBalanceNumber} USDC`);
         } else {
           setBackendUsdcBalance("0.000000");
-          console.log(`💰 USDC 余额: 0 USDC`);
+          console.log(`⚠️  USDC 余额: 0 USDC (响应为空)`);
         }
-      } catch (usdcError) {
-        console.error("USDC 余额获取失败:", usdcError);
+              } catch (usdcError: any) {
+          console.error("❌ USDC 余额获取失败:", usdcError);
+          console.error("错误详情:", {
+            message: usdcError.message,
+            code: usdcError.code,
+            data: usdcError.data
+          });
+          setBackendUsdcBalance("0.000000");
+          setError(`USDC 余额查询失败: ${usdcError.message}`);
+        }
+        
+        console.log(`✅ 余额获取完成 - ETH: ${ethBalanceNumber.toFixed(6)}, USDC: ${backendUsdcBalance}`);
+        
+      } catch (error: any) {
+        console.error("❌ 获取余额失败:", error);
+        setError(`余额查询失败: ${error.message}`);
+        setBackendEthBalance("0.000000");
         setBackendUsdcBalance("0.000000");
-      }
-      
-      console.log(`✅ 余额获取完成 - ETH: ${ethBalanceNumber.toFixed(6)}, USDC: ${backendUsdcBalance}`);
-      
-    } catch (error) {
-      console.error("获取余额失败:", error);
-      setBackendEthBalance("0.000000");
-      setBackendUsdcBalance("0.000000");
-    } finally {
+      } finally {
       setBalanceLoading(false);
     }
   };
@@ -407,6 +463,59 @@ export function Welcome() {
     }
   };
 
+  // 新增：切换到指定网络
+  const switchToNetwork = async (ethereum: any, targetNetwork: any) => {
+    try {
+      console.log(`🔄 尝试切换到网络: ${targetNetwork.name} (${targetNetwork.chainIdHex})`);
+      
+      await ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: targetNetwork.chainIdHex }],
+      });
+      
+      console.log(`✅ 成功切换到 ${targetNetwork.name}`);
+      return true;
+    } catch (switchError: any) {
+      console.log(`⚠️  网络切换失败: ${switchError.message}`);
+      
+      // 如果网络不存在，尝试添加网络
+      if (switchError.code === 4902) {
+        try {
+          console.log(`🔄 网络不存在，尝试添加网络: ${targetNetwork.name}`);
+          
+          let blockExplorerUrl = 'https://basescan.org';
+          if (targetNetwork.key === "baseSepolia") {
+            blockExplorerUrl = 'https://sepolia.basescan.org';
+          } else if (targetNetwork.key === "ethSepolia") {
+            blockExplorerUrl = 'https://sepolia.etherscan.io';
+          }
+          
+          await ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: targetNetwork.chainIdHex,
+              chainName: targetNetwork.name,
+              nativeCurrency: {
+                name: 'ETH',
+                symbol: 'ETH',
+                decimals: 18,
+              },
+              rpcUrls: [targetNetwork.rpcUrl],
+              blockExplorerUrls: [blockExplorerUrl],
+            }],
+          });
+          
+          console.log(`✅ 成功添加并切换到 ${targetNetwork.name}`);
+          return true;
+        } catch (addError: any) {
+          console.error(`❌ 添加网络失败: ${addError.message}`);
+          return false;
+        }
+      }
+      return false;
+    }
+  };
+
   // 新增：执行 EIP-2612 Permit 签名
   const executePermitSignature = async () => {
     if (!metamaskAccount || !account || !permitParams.value) {
@@ -523,20 +632,31 @@ export function Welcome() {
           <select
             value={selectedNetwork}
             onChange={e => {
-              const newNetwork = e.target.value as "mainnet" | "sepolia";
+              const newNetwork = e.target.value as "mainnet" | "baseSepolia" | "ethSepolia";
               setSelectedNetwork(newNetwork);
+              console.log(`🔄 网络切换到 ${NETWORKS[newNetwork].name}`);
+              
+              // 如果 MetaMask 已连接，自动切换到对应网络
+              if (metamaskAccount) {
+                const ethereum = checkMetaMask();
+                if (ethereum) {
+                  switchToNetwork(ethereum, NETWORKS[newNetwork]);
+                }
+              }
+              
               // 网络切换后，如果有已连接的钱包，自动刷新余额
               if (account) {
                 setTimeout(() => {
-                  console.log(`🔄 网络切换到 ${NETWORKS[newNetwork].name}，自动刷新余额...`);
+                  console.log(`🔄 网络切换完成，自动刷新余额...`);
                   fetchBackendBalance();
-                }, 300);
+                }, 1000); // 给网络切换更多时间
               }
             }}
             className="px-2 py-1 border rounded text-sm"
           >
             <option value="mainnet">Base 主网</option>
-            <option value="sepolia">Base Sepolia 测试网</option>
+            <option value="baseSepolia">Base Sepolia 测试网</option>
+            <option value="ethSepolia">以太坊 Sepolia 测试网</option>
           </select>
         </div>
         <button  
@@ -563,6 +683,23 @@ export function Welcome() {
                  <span className="ml-1 font-mono">{balanceLoading ? "..." : backendUsdcBalance}</span>
                </div>
              </div>
+             
+             {/* 网络状态提示 */}
+             {metamaskAccount && (
+               <div className="text-xs text-center mb-2">
+                 <span className="text-gray-600">MetaMask 网络: </span>
+                 <span className="font-mono text-blue-600">{network.name}</span>
+                 <span className="text-gray-500 ml-2">({network.chainIdHex})</span>
+               </div>
+             )}
+             
+             {/* 错误信息显示 */}
+             {error && (
+               <div className="text-xs text-center mb-2 p-2 bg-red-100 border border-red-200 rounded">
+                 <span className="text-red-700 font-semibold">⚠️ 错误: </span>
+                 <span className="text-red-600">{error}</span>
+               </div>
+             )}
              
              {/* 调试信息 */}
              <div className="text-xs text-gray-500 mb-2">
