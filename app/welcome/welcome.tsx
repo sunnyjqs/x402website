@@ -117,7 +117,7 @@ export function Welcome() {
     setError(null);  
     setPaymentInfo(null);  
     try {  
-      const response = await client.httpClient!.get("/item1");  
+      const response = await client.httpClient!.get("/item2");  
       setWeatherData(response.data);  
       console.log("x-payment-response", response.headers["x-payment-response"]);
       if (response.headers["x-payment-response"]) {  
