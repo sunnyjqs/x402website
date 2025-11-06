@@ -68,7 +68,7 @@ export function Welcome() {
     setPaymentInfo(null);  
       try {  
     // 调用后端代理，后端使用私钥处理 x402 请求
-    const response = await client.httpClient.get("/item1");
+    const response = await client.httpClient.get("/item2");
     
     // 处理响应数据
     if (response.data.data) {
@@ -139,7 +139,7 @@ export function Welcome() {
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"  
           disabled={loading || !client}  
         >  
-          {loading ? "加载中..." : "查询 item1（付费）"}  
+          {loading ? "加载中..." : "查询 item2（付费）"}  
         </button>  
         <div className="w-full flex items-center gap-2">  
           <input  
