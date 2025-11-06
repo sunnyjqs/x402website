@@ -54,20 +54,20 @@ class X402MetaMaskClient {
       });  
     } catch (switchError: any) {  
       if (switchError.code === 4902) {  
-        await (window as any).ethereum.request({  
-          method: "wallet_addEthereumChain",  
-          params: [{  
-            chainId: "0x2105",  
-            chainName: "Base Sepolia",  
-            nativeCurrency: {  
-              name: "Ethereum",  
-              symbol: "ETH",  
-              decimals: 18,  
-            },  
-            rpcUrls: ["https://sepolia.base.org"],  
-            blockExplorerUrls: ["https://sepolia.basescan.org"],  
-          }],  
-        });  
+        await (window as any).ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: "0x2105",
+            chainName: "Base",
+            nativeCurrency: {
+              name: "Ethereum",
+              symbol: "ETH",
+              decimals: 18,
+            },
+            rpcUrls: ["https://mainnet.base.org"],
+            blockExplorerUrls: ["https://basescan.org"],
+          }],
+        });
       }  
     }  
   }  
